@@ -693,7 +693,7 @@ async function connectWhatsApp() {
                 if (!qrScanned) {
                     latestQR = qr;
                     console.log('='.repeat(50));
-                    console.log('NEW QR CODE - Scan at: https://<RHEA_RENDER_URL>/qr');
+                    console.log('NEW QR CODE - Scan at: https://rhea-bot-mojq.onrender.com/qr');
                     console.log('='.repeat(50));
                 }
             }
