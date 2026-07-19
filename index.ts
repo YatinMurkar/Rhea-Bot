@@ -616,6 +616,9 @@ async function startBot() {
 }
 
 // --- CONNECT WHATSAPP (can be called repeatedly without touching MongoDB) ---
+let qrRetryCount = 0;
+const MAX_QR_RETRIES = 50;
+
 async function connectWhatsApp() {
     try {
         let state: any;
@@ -637,9 +640,16 @@ async function connectWhatsApp() {
             state = result.state;
             saveCreds = result.saveCreds;
             console.log("Auth state loaded from MongoDB.");
+            qrRetryCount = 0;
         } else {
             // No MongoDB creds — use pure in-memory creds (QR-only mode)
             usingInMemoryAuth = true;
+            qrRetryCount++;
+            if (qrRetryCount > MAX_QR_RETRIES) {
+                console.log(`QR retry limit (${MAX_QR_RETRIES}) reached. Pausing for 5 minutes...`);
+                await new Promise(r => setTimeout(r, 5 * 60 * 1000));
+                qrRetryCount = 0;
+            }
             const { state: memState, saveCreds: memSaveCreds } = await useMultiFileAuthState('./temp_auth');
             state = memState;
             saveCreds = memSaveCreds;
@@ -706,7 +716,11 @@ async function connectWhatsApp() {
                 qrScanned = false;
                 if (shouldReconnect) {
                     // Reconnect WhatsApp ONLY — don't touch MongoDB
-                    connectWhatsApp();
+                    if (statusCode === 408) {
+                        setTimeout(() => connectWhatsApp(), 5000);
+                    } else {
+                        setTimeout(() => connectWhatsApp(), 1000);
+                    }
                 } else {
                     console.log('Session expired/logged out (statusCode:', statusCode, '). Clearing auth for fresh QR...');
                     
@@ -720,10 +734,10 @@ async function connectWhatsApp() {
                     }
 
                     if (authCollection) {
-                        authCollection.deleteMany({}).then(() => {
-                            console.log('Auth cleared from MongoDB. Restarting WhatsApp for fresh QR...');
+                        authCollection.deleteOne({ _id: 'creds' }).then(() => {
+                            console.log('Auth creds cleared from MongoDB. Preserving other keys. Restarting WhatsApp for fresh QR...');
                             setTimeout(() => connectWhatsApp(), 2000); // add slight delay to prevent instant loop
-                        });
+                        }).catch(e => console.error("Error clearing creds:", e));
                     } else {
                         console.log('No MongoDB — restarting WhatsApp with fresh creds...');
                         setTimeout(() => connectWhatsApp(), 2000);
