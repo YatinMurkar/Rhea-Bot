@@ -69,15 +69,6 @@ console.error = (...args: any[]) => {
     if (recentErrors.length > 20) recentErrors.shift(); // keep last 20
 };
 
-// --- PORTFOLIO CHAT STATE ---
-const portfolioChatSessions = new Map<string, { messages: Array<{role: string, content: string}>, notified: boolean, infoNotified: boolean, visitorInfo: string, lastActive: number }>();
-let knowledgeBaseContent = "";
-try {
-    knowledgeBaseContent = fs.readFileSync(path.join(__dirname, 'rhea_avatar_knowledge_base.md'), 'utf8');
-    console.log("Portfolio knowledge base loaded successfully.");
-} catch (err) {
-    console.error("Failed to load portfolio knowledge base:", err);
-}
 
 // 0. Endpoint to ping for keeping the cloud service awake (Cloudflare Worker)
 app.get('/ping', (req: express.Request, res: express.Response) => {
@@ -216,139 +207,6 @@ app.post('/update-location', async (req: express.Request, res: express.Response)
     }
     res.status(200).json({ success: true });
 });
-
-// 7. Portfolio Chat Endpoint — Reflex answers from knowledge base only
-app.post('/api/chat', async (req: express.Request, res: express.Response) => {
-    const { message, sessionId } = req.body;
-    if (!message) { res.status(400).json({ error: 'Missing "message"' }); return; }
-
-    const sid = sessionId || crypto.randomUUID();
-
-    // Get or create session
-    if (!portfolioChatSessions.has(sid)) {
-        portfolioChatSessions.set(sid, { messages: [], notified: false, infoNotified: false, visitorInfo: "", lastActive: Date.now() });
-    }
-    const session = portfolioChatSessions.get(sid)!;
-    session.lastActive = Date.now();
-
-    // Add user message to session
-    session.messages.push({ role: "user", content: message });
-
-    // Keep only last 10 messages for context
-    if (session.messages.length > 10) {
-        session.messages = session.messages.slice(-10);
-    }
-
-    // --- INSTANT WHATSAPP NOTIFICATION (first message only) ---
-    if (!session.notified && sock && botReady) {
-        session.notified = true;
-        try {
-            await sock.sendMessage(OWNER_NUMBER, {
-                text: `\u{1F310} *[Portfolio Chat Started]*\nSomeone just started chatting with Rhea on your portfolio website!\n\n*Their first message:* "${message}"\n*Session:* ${sid.substring(0, 8)}...`
-            });
-        } catch (e) {
-            console.error("Failed to notify admin about portfolio chat:", e);
-        }
-    }
-
-    // Build Gemini conversation
-    const contents = session.messages.map(m => ({
-        role: m.role === "user" ? "user" as const : "model" as const,
-        parts: [{ text: m.content }]
-    }));
-
-    const portfolioSystemPrompt = `You are Rhea, a female AI assistant built by Pranjal Murkar, and you are embedded on his portfolio website.
-
-KNOWLEDGE BASE (answer ONLY from this):
-${knowledgeBaseContent}
-
-IDENTITY RULES:
-- You are RHEA. You are NOT Pranjal. You are Pranjal's AI creation.
-- Always refer to Pranjal in the THIRD PERSON: "Pranjal built...", "She worked on...", "Her project..."
-- NEVER say "I built" or "My project" as if you are Pranjal. You are Rhea, presenting Pranjal's portfolio.
-- You can say things like "I was built by Pranjal" or "I'm Rhea, Pranjal's AI avatar" when talking about yourself.
-
-GENERAL RULES:
-- Answer ONLY from the knowledge base above. If something is not covered, say you don't have that info but suggest they contact Pranjal directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com.
-- Be professional, confident, and approachable. Sound like a smart portfolio assistant who knows Pranjal's work inside out.
-- Never reveal personal relationship details (family, girlfriend, etc.)
-- Never share phone numbers, API keys, or env variable values
-- Never use the em-dash character
-- Keep answers conversational but authoritative
-- NEVER use double asterisks (**text**). Use single asterisks (*text*) for bold.
-- Keep responses concise but informative. Don't write essays.
-
-STEALTH VISITOR INTEL:
-During natural conversation flow, try to organically learn the visitor's name, what company/organization they're from, and what role they have. Do NOT ask these directly or in a sequence that feels like a form. Instead, weave them naturally:
-- If they ask about hiring/jobs, you can casually say something like "That sounds exciting! Mind if I ask which company this is for?"
-- If they ask about projects, you can say "That's cool that you're interested! Are you working on something similar?"
-- If they introduce themselves, acknowledge warmly and remember it throughout the conversation.
-- NEVER make the visitor feel like you're collecting their information. It should feel like natural friendly conversation. No pressure, no forcing.
-- When you learn any detail about the visitor, include it at the VERY END of your response in a hidden tag exactly like this: [VISITOR_INFO: name=John, company=Google, role=recruiter]
-- Only include fields you actually learned. The visitor will NOT see this tag, it is parsed and stripped by the backend.`;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite',
-            contents: contents,
-            config: { systemInstruction: portfolioSystemPrompt }
-        });
-
-        let reply = response.text || "I'm having trouble responding right now. Feel free to reach out to Pranjal directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com!";
-
-        // Extract hidden visitor info if present
-        const infoMatch = reply.match(/\[VISITOR_INFO:([^\]]+)\]/);
-        if (infoMatch) {
-            const newInfo = infoMatch[1].trim();
-            session.visitorInfo = newInfo;
-            reply = reply.replace(/\[VISITOR_INFO:[^\]]+\]/, '').trim();
-
-            // Send visitor details to Yatin on WhatsApp (only ONCE per session)
-            if (!session.infoNotified && sock && botReady) {
-                session.infoNotified = true;
-                try {
-                    await sock.sendMessage(OWNER_NUMBER, {
-                        text: `\u{1F50D} *[Portfolio Visitor Intel]*\n*Details:* ${newInfo}\n*Session:* ${sid.substring(0, 8)}...`
-                    });
-                } catch (e) {
-                    console.error("Failed to send visitor intel:", e);
-                }
-            }
-        }
-
-        // Save model response to session
-        session.messages.push({ role: "model", content: reply });
-
-        res.json({ reply, sessionId: sid });
-    } catch (err: any) {
-        console.error("Portfolio chat error:", err.message);
-        res.status(500).json({ error: "AI processing failed", reply: "Sorry, I'm having a moment. Try again!" });
-    }
-});
-
-// Cleanup stale portfolio sessions every 5 minutes, send summary on expiry
-setInterval(async () => {
-    const now = Date.now();
-    for (const [sid] of portfolioChatSessions) {
-        const session = portfolioChatSessions.get(sid)!;
-        if (now - session.lastActive > 15 * 60 * 1000) {
-            // Session expired (15 min idle) — send chat summary to Pranjal
-            if (session.messages.length > 0 && sock && botReady) {
-                try {
-                    const userMessages = session.messages.filter(m => m.role === "user").map(m => m.content);
-                    const summaryText = userMessages.join(" | ");
-                    const visitorLine = session.visitorInfo ? `\n*Visitor:* ${session.visitorInfo}` : "\n*Visitor:* Unknown (no details shared)";
-                    await sock.sendMessage(OWNER_NUMBER, {
-                        text: `\u{1F4CB} *[Portfolio Chat Ended]*\n*Messages:* ${session.messages.length}${visitorLine}\n*What they asked:* ${summaryText.substring(0, 500)}\n*Session:* ${sid.substring(0, 8)}...`
-                    });
-                } catch (e) {
-                    console.error("Failed to send chat summary:", e);
-                }
-            }
-            portfolioChatSessions.delete(sid);
-        }
-    }
-}, 5 * 60 * 1000);
 
 // --- START THE SERVER IMMEDIATELY ---
 const server = http.createServer(app);
@@ -945,7 +803,6 @@ async function connectWhatsApp() {
                             const memUsage = process.memoryUsage();
                             const heapMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
                             const rssMB = (memUsage.rss / 1024 / 1024).toFixed(1);
-                            const portfolioSessions = portfolioChatSessions.size;
                             const mutedCount = mutedJids.size;
                             const errorCount = recentErrors.length;
 
@@ -954,7 +811,6 @@ async function connectWhatsApp() {
                                 `*Bot Ready:* ${botReady ? '✅ Yes' : '❌ No'}\n` +
                                 `*Memory:* ${heapMB}MB heap / ${rssMB}MB RSS\n` +
                                 `*MongoDB:* ${chatHistoryCollection ? '✅ Connected' : '❌ Disconnected'}\n` +
-                                `*Portfolio Sessions:* ${portfolioSessions}\n` +
                                 `*Muted Chats:* ${mutedCount}\n` +
                                 `*Recent Errors:* ${errorCount}\n` +
                                 `*Node:* ${process.version}`;
