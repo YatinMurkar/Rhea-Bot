@@ -21,8 +21,8 @@ dotenv.config();
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const OWNER_NUMBER = "<RHEA_WHATSAPP_NUMBER>@s.whatsapp.net";
-const ADMIN_NUMBERS = new Set(["<OWNER_NUMBERS_FOR_RHEA>"]);
+const OWNER_NUMBER = "917744845094@s.whatsapp.net";
+const ADMIN_NUMBERS = new Set(["917057962045", "122423764594882", "917744845094", "40789321191437"]);
 
 if (!MONGODB_URI) {
     console.error("MONGODB_URI is not set in environment variables!");
