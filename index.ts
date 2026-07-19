@@ -217,7 +217,7 @@ app.post('/update-location', async (req: express.Request, res: express.Response)
     res.status(200).json({ success: true });
 });
 
-// 7. Portfolio Chat Endpoint — Reflex answers from knowledge base only
+// 7. Portfolio Chat Endpoint — Rhea answers from knowledge base only
 app.post('/api/chat', async (req: express.Request, res: express.Response) => {
     const { message, sessionId } = req.body;
     if (!message) { res.status(400).json({ error: 'Missing "message"' }); return; }
@@ -1190,7 +1190,7 @@ When calculating minutes for alarms or reminders, use the IST time provided abov
                                             
                                             // Reverse to get chronological order
                                             history.reverse();
-                                            historyText = history.map(m => `[${new Date(m.timestamp).toLocaleString()}] ${m.role === 'user' ? 'User' : 'Reflex'}: ${m.content}`).join('\n');
+                                            historyText = history.map(m => `[${new Date(m.timestamp).toLocaleString()}] ${m.role === 'user' ? 'User' : 'Rhea'}: ${m.content}`).join('\n');
                                         }
                                         
                                         contents.push(response.candidates[0].content);
