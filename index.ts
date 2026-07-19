@@ -1159,7 +1159,7 @@ async function connectWhatsApp() {
                     // --- VIP Logic ---
                     const pappaNumbers = (process.env.VIP_PAPPA || "<VIP_1_JID>").split(",").map(n => n.trim());
                     const mammaNumbers = (process.env.VIP_MAMMA || "<VIP_2_JID>").split(",").map(n => n.trim());
-                    const pranjalNumbers = (process.env.VIP_PRANJAL || "").split(",").map(n => n.trim());
+                    const pranjalNumbers = (process.env.VIP_PRANJAL || "919373278178,226160210378789,917057962045,122423764594882").split(",").map(n => n.trim());
                     const vipGroups = (process.env.VIP_GROUPS || "120363409001747998@g.us").split(",").map(n => n.trim());
 
                     let vipName = "";
@@ -1177,9 +1177,10 @@ You speak with elegance but stay approachable. You use feminine expression natur
 You act on behalf of Pranjal and manage interactions. You are talking directly to Pranjal right now.
 Pranjal's 3 most important people are Mamma, Pappa, and her boyfriend Yatin. Whenever dealing with a task involving them, prioritize it above all else, and treat them with absolute utmost respect.
 When Pranjal asks you to message or do any work regarding them, do NOT use the searchGoogleContact tool. Use these numbers directly:
-- VIP 1: <VIP_1_JID>
-- VIP 2: <VIP_2_JID>
-- Pranjal (Admin/You): 919373278178@s.whatsapp.net
+- Pappa: <VIP_1_JID>
+- Mamma: <VIP_2_JID>
+- Yatin (Boyfriend): 919373278178@s.whatsapp.net
+- Pranjal (Admin/You): 917744845094@s.whatsapp.net
 Always be concise, friendly, and helpful. Do not sound robotic.
 If you receive an image, video, audio, or document, acknowledge it and respond appropriately.
 
@@ -2155,10 +2156,9 @@ When calculating minutes for alarms or reminders, use the IST time provided abov
                                         
                                         // WhatsApp Multi-Device translates incoming chats to @lid in the database.
                                         // We map the known phone JIDs to their respective @lid so the query succeeds.
-                                        if (targetJid.includes("917744845094")) targetJid = "40789321191437@lid"; // Pranjal
-                                        else if (targetJid.includes("919373278178")) targetJid = "122423764594882@lid"; // Pranjal
+                                        if (targetJid.includes("917744845094") || targetJid.includes("40789321191437")) targetJid = "40789321191437@lid"; // Pranjal
+                                        else if (targetJid.includes("919373278178") || targetJid.includes("122423764594882") || targetJid.includes("226160210378789") || targetJid.includes("917057962045")) targetJid = "122423764594882@lid"; // Yatin
                                         else if (targetJid.includes("919324404314")) targetJid = "241510339620878@lid"; // Mamma
-                                        else if (targetJid.includes("122423764594882")) targetJid = "122423764594882@lid"; // Pranjal direct LID fallback
                                         
                                         let historyText = "No history found or database not connected.";
                                         if (chatHistoryCollection) {
