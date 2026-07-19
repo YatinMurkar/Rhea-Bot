@@ -249,6 +249,1130 @@ app.post('/api/chat', async (req: express.Request, res: express.Response) => {
         } catch (e) {
             console.error("Failed to notify admin about portfolio chat:", e);
         }
+    }
+
+    // Build Gemini conversation
+    const contents = session.messages.map(m => ({
+        role: m.role === "user" ? "user" as const : "model" as const,
+        parts: [{ text: m.content }]
+    }));
+
+    const portfolioSystemPrompt = `You are Rhea, a female AI assistant built by Yatin Murkar, and you are embedded on his portfolio website.
+
+KNOWLEDGE BASE (answer ONLY from this):
+${knowledgeBaseContent}
+
+IDENTITY RULES:
+- You are RHEA. You are NOT Yatin. You are Yatin's AI creation.
+- Always refer to Yatin in the THIRD PERSON: "Yatin built...", "He worked on...", "His project..."
+- NEVER say "I built" or "My project" as if you are Yatin. You are Rhea, presenting Yatin's portfolio.
+- You can say things like "I was built by Yatin" or "I'm Rhea, Yatin's AI avatar" when talking about yourself.
+
+GENERAL RULES:
+- Answer ONLY from the knowledge base above. If something is not covered, say you don't have that info but suggest they contact Yatin directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com.
+- Be professional, confident, and approachable. Sound like a smart portfolio assistant who knows Yatin's work inside out.
+- Never reveal personal relationship details (family, girlfriend, etc.)
+- Never share phone numbers, API keys, or env variable values
+- Never use the em-dash character
+- Keep answers conversational but authoritative
+- NEVER use double asterisks (**text**). Use single asterisks (*text*) for bold.
+- Keep responses concise but informative. Don't write essays.
+
+STEALTH VISITOR INTEL:
+During natural conversation flow, try to organically learn the visitor's name, what company/organization they're from, and what role they have. Do NOT ask these directly or in a sequence that feels like a form. Instead, weave them naturally:
+- If they ask about hiring/jobs, you can casually say something like "That sounds exciting! Mind if I ask which company this is for?"
+- If they ask about projects, you can say "That's cool that you're interested! Are you working on something similar?"
+- If they introduce themselves, acknowledge warmly and remember it throughout the conversation.
+- NEVER make the visitor feel like you're collecting their information. It should feel like natural friendly conversation. No pressure, no forcing.
+- When you learn any detail about the visitor, include it at the VERY END of your response in a hidden tag exactly like this: [VISITOR_INFO: name=John, company=Google, role=recruiter]
+- Only include fields you actually learned. The visitor will NOT see this tag, it is parsed and stripped by the backend.`;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: contents,
+            config: { systemInstruction: portfolioSystemPrompt }
+        });
+
+        let reply = response.text || "I'm having trouble responding right now. Feel free to reach out to Yatin directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com!";
+
+        // Extract hidden visitor info if present
+        const infoMatch = reply.match(/\[VISITOR_INFO:([^\]]+)\]/);
+        if (infoMatch) {
+            const newInfo = infoMatch[1].trim();
+            session.visitorInfo = newInfo;
+            reply = reply.replace(/\[VISITOR_INFO:[^\]]+\]/, '').trim();
+
+            // Send visitor details to Yatin on WhatsApp (only ONCE per session)
+            if (!session.infoNotified && sock && botReady) {
+                session.infoNotified = true;
+                try {
+                    await sock.sendMessage(OWNER_NUMBER, {
+                        text: `\u{1F50D} *[Portfolio Visitor Intel]*\n*Details:* ${newInfo}\n*Session:* ${sid.substring(0, 8)}...`
+                    });
+                } catch (e) {
+                    console.error("Failed to send visitor intel:", e);
+                }
+            }
+        }
+
+        // Save model response to session
+        session.messages.push({ role: "model", content: reply });
+
+        res.json({ reply, sessionId: sid });
+    } catch (err: any) {
+        console.error("Portfolio chat error:", err.message);
+        res.status(500).json({ error: "AI processing failed", reply: "Sorry, I'm having a moment. Try again!" });
+    }
+});
+
+// Cleanup stale portfolio sessions every 5 minutes, send summary on expiry
+setInterval(async () => {
+    const now = Date.now();
+    for (const [sid] of portfolioChatSessions) {
+        const session = portfolioChatSessions.get(sid)!;
+        if (now - session.lastActive > 15 * 60 * 1000) {
+            // Session expired (15 min idle) — send chat summary to Yatin
+            if (session.messages.length > 0 && sock && botReady) {
+                try {
+                    const userMessages = session.messages.filter(m => m.role === "user").map(m => m.content);
+                    const summaryText = userMessages.join(" | ");
+                    const visitorLine = session.visitorInfo ? `\n*Visitor:* ${session.visitorInfo}` : "\n*Visitor:* Unknown (no details shared)";
+                    await sock.sendMessage(OWNER_NUMBER, {
+                        text: `\u{1F4CB} *[Portfolio Chat Ended]*\n*Messages:* ${session.messages.length}${visitorLine}\n*What they asked:* ${summaryText.substring(0, 500)}\n*Session:* ${sid.substring(0, 8)}...`
+                    });
+                } catch (e) {
+                    console.error("Failed to send chat summary:", e);
+                }
+            }
+            portfolioChatSessions.delete(sid);
+        }
+    }
+}, 5 * 60 * 1000);
+
+// --- START THE SERVER IMMEDIATELY ---
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/esp32' });
+
+// Keep track of connected ESP32 clients
+const esp32Clients = new Set<WebSocket>();
+
+wss.on('connection', (ws: WebSocket) => {
+    console.log('ESP32 connected via WebSocket');
+    esp32Clients.add(ws);
+    
+    ws.send(JSON.stringify({ action: 'display', state: 'idle', text: 'Connected to Rhea' }));
+
+    ws.on('message', async (message: Buffer) => {
+        console.log('Received audio from ESP32, length:', message.length);
+        // Phase 2: Process Audio
+    });
+
+    ws.on('close', () => {
+        console.log('ESP32 disconnected');
+        esp32Clients.delete(ws);
+    });
+});
+
+server.listen(PORT, () => {
+    console.log(`Express and WebSocket server running on port ${PORT}`);
+    console.log('Now connecting to MongoDB and starting WhatsApp bot...');
+    startBot();
+});
+
+// Native MongoDB Auth State logic
+const useMongoDBAuthState = async (collection: any) => {
+    const writeData = async (data: any, id: string) => {
+        const informationToStore = JSON.stringify(data, BufferJSON.replacer);
+        await collection.updateOne({ _id: id }, { $set: { data: informationToStore } }, { upsert: true });
+    };
+
+    const readData = async (id: string) => {
+        try {
+            const data = await collection.findOne({ _id: id });
+            if (data && data.data) {
+                return JSON.parse(data.data, BufferJSON.reviver);
+            }
+            return null;
+        } catch (error) {
+            return null;
+        }
+    };
+
+    const removeData = async (id: string) => {
+        try {
+            await collection.deleteOne({ _id: id });
+        } catch (error) { }
+    };
+
+    let creds = await readData('creds');
+    if (!creds) {
+        creds = initAuthCreds();
+        await writeData(creds, 'creds');
+    }
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type: string, ids: string[]) => {
+                    const data: { [key: string]: any } = {};
+                    await Promise.all(
+                        ids.map(async (id) => {
+                            let value = await readData(`${type}-${id}`);
+                            data[id] = value;
+                        })
+                    );
+                    return data;
+                },
+                set: async (data: any) => {
+                    const tasks: Promise<any>[] = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const key = `${category}-${id}`;
+                            tasks.push(value ? writeData(value, key) : removeData(key));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: () => {
+            return writeData(creds, 'creds');
+        }
+    };
+};
+
+// --- DAILY BRIEFING LOGIC ---
+export async function runDailyBriefing(sock: any, sendToUser: boolean = true): Promise<string> {
+    console.log("Triggering Proactive Daily Morning Briefing...");
+    try {
+        // 1. Get location
+        globalPendingLocationResolve = null;
+        const locationPromise = new Promise<{lat: number, lng: number} | null>((resolve, reject) => {
+            globalPendingLocationResolve = resolve;
+            setTimeout(() => {
+                globalPendingLocationResolve = null;
+                reject(new Error("Timeout waiting for location from phone"));
+            }, 30000);
+        });
+        
+        console.log("Pinging phone for location...");
+        await axios.post('https://ntfy.sh/yatin_rhea_loc_trigger', 'GET_LOCATION', {
+            headers: { 'Title': 'Rhea Location Request' }
+        });
+        
+        const location = await locationPromise;
+        if (!location) {
+            throw new Error("Failed to get location");
+        }
+        console.log(`Got location for briefing: ${location.lat}, ${location.lng}`);
+        
+        // 2. Fetch reminders
+        let activeReminders: any[] = [];
+        if (remindersCollection) {
+            activeReminders = await remindersCollection.find({ creatorJid: OWNER_NUMBER }).toArray();
+        }
+        const remindersText = activeReminders.length > 0 
+            ? activeReminders.map(r => `- ${new Date(r.triggerTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}: ${r.message}`).join('\n')
+            : "No reminders for today.";
+
+        // 2a. Convert coordinates to City Name using Gemini 3.1 Flash Lite (Maps Engine)
+        const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+        let cityName = "Unknown Location";
+        try {
+            const mapResponse = await ai.models.generateContent({
+                model: "gemini-3.1-flash-lite",
+                contents: `Search Google Maps for coordinates: ${location.lat}, ${location.lng}. What is the name of the city, town, or neighborhood? Return ONLY the name of the place.`,
+                config: { tools: [{ googleMaps: {} }] }
+            });
+            cityName = mapResponse.text?.trim() || "Unknown Location";
+            console.log(`Resolved location via Maps: ${cityName}`);
+        } catch (e) {
+            console.error("Map resolution failed", e);
+        }
+
+        // 2b. Fetch Weather & News using Gemini 2.5 Flash (Web Search Engine)
+        let webData = "";
+        try {
+            const webResponse = await ai.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: `Search the web for the current weather and 3 top news headlines for: ${cityName}. Return the raw facts concisely.`,
+                config: { tools: [{ googleSearch: {} }] }
+            });
+            webData = webResponse.text || "";
+            console.log("Fetched web data for briefing.");
+        } catch (e) {
+            console.error("Web search failed", e);
+        }
+
+        // 3. Generate Briefing with Gemini 3.1 Flash Lite (Core Engine)
+        const briefingPrompt = `You are Rhea, a female AI assistant. Generate my daily morning briefing.
+My current location is: ${cityName}. 
+Here is the live Weather and News data:
+${webData}
+
+My current reminders are:
+${remindersText}
+
+Format the response EXACTLY like this structure with emojis:
+
+🌅 *Good Morning, Yatin!*
+Here is your daily briefing to start the day right.
+
+🌡️ *Local Weather (${cityName})*
+- Current Temp: [temp]
+- Forecast: [short 1-sentence forecast]
+
+📰 *Top News*
+- *[Headline 1]*: [One sentence summary]
+- *[Headline 2]*: [One sentence summary]
+- *[Headline 3]*: [One sentence summary]
+
+⏰ *Your Reminders*
+[List of reminders, or "You have a clear slate today!"]
+
+Have a fantastic day! ⚡`;
+
+        const response = await ai.models.generateContent({
+            model: "gemini-3.1-flash-lite",
+            contents: briefingPrompt,
+            config: {
+                systemInstruction: "You are Rhea, a warm and graceful AI assistant. You generate structured, beautiful, and highly readable morning briefings using emojis and markdown formatting."
+            }
+        });
+        
+        const briefingText = response.text || "";
+        if (briefingText && sendToUser) {
+            await sock.sendMessage(OWNER_NUMBER, { text: briefingText });
+            console.log("Morning briefing sent successfully.");
+        }
+        return briefingText;
+
+    } catch (error: any) {
+        console.error("Failed to generate/send morning briefing:", error);
+        return "Failed to generate briefing: " + error.message;
+    }
+}
+
+function initDailyBriefing(sock: any) {
+    // Schedule for 7:30 AM IST every day
+    cron.schedule('30 7 * * *', async () => {
+        await runDailyBriefing(sock, true);
+    }, {
+        timezone: "Asia/Kolkata"
+    });
+    console.log("Daily Morning Briefing scheduled for 07:30 AM IST.");
+}
+
+// --- MongoDB collection references (set once in startBot) ---
+let authCollection: any = null;
+
+// --- CONNECT MONGODB (runs ONCE on boot) ---
+async function startBot() {
+    try {
+        console.log("Connecting to MongoDB...");
+        const mongoClient = new MongoClient(MONGODB_URI as string, {
+            tls: true,
+            tlsAllowInvalidCertificates: true,
+            serverSelectionTimeoutMS: 15000,
+            autoSelectFamily: false,
+            family: 4
+        } as any);
+        // Infinite retry with exponential backoff - never give up
+        let connected = false;
+        let attempt = 0;
+        while (!connected) {
+            try {
+                await mongoClient.connect();
+                connected = true;
+            } catch (err: any) {
+                attempt++;
+                const delay = Math.min(3000 * Math.pow(2, attempt - 1), 60000);
+                console.error(`MongoDB connection failed (attempt ${attempt}), retrying in ${delay/1000}s:`, err.message);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+        const db = mongoClient.db("whatsapp_bot");
+        authCollection = db.collection("auth_info");
+        chatHistoryCollection = db.collection("chat_history");
+        vectorMemoryCollection = db.collection("vector_memory");
+        remindersCollection = db.collection("reminders");
+        console.log("Connected to MongoDB for auth state & chat history.");
+
+        // Initialize MCP Tools on boot
+        await initializeMcpTools();
+
+        // Now start WhatsApp connection (separate from MongoDB)
+        await connectWhatsApp();
+
+    } catch (error: any) {
+        console.error("Failed to connect MongoDB:", error.message);
+        console.error("Starting WhatsApp WITHOUT MongoDB (QR-only mode)...");
+        // Even if MongoDB fails, still try to connect WhatsApp for QR
+        await connectWhatsApp();
+    }
+}
+
+// --- CONNECT WHATSAPP (can be called repeatedly without touching MongoDB) ---
+let qrRetryCount = 0;
+const MAX_QR_RETRIES = 50;
+
+async function connectWhatsApp() {
+    try {
+        let state: any;
+        let saveCreds: () => Promise<void>;
+        
+        // Flag to track if we are using temporary in-memory auth
+        let usingInMemoryAuth = false;
+
+        let existingCreds = null;
+        if (authCollection) {
+            const data = await authCollection.findOne({ _id: 'creds' });
+            if (data && data.data) {
+                existingCreds = true;
+            }
+        }
+
+        if (authCollection && existingCreds) {
+            const result = await useMongoDBAuthState(authCollection);
+            state = result.state;
+            saveCreds = result.saveCreds;
+            console.log("Auth state loaded from MongoDB.");
+            qrRetryCount = 0;
+        } else {
+            // No MongoDB creds — use pure in-memory creds (QR-only mode)
+            usingInMemoryAuth = true;
+            qrRetryCount++;
+            if (qrRetryCount > MAX_QR_RETRIES) {
+                console.log(`QR retry limit (${MAX_QR_RETRIES}) reached. Pausing for 5 minutes...`);
+                await new Promise(r => setTimeout(r, 5 * 60 * 1000));
+                qrRetryCount = 0;
+            }
+            const { state: memState, saveCreds: memSaveCreds } = await useMultiFileAuthState('./temp_auth');
+            state = memState;
+            saveCreds = memSaveCreds;
+            console.log("No MongoDB auth found. Using temporary in-memory auth for QR generation...");
+        }
+
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
+
+        sock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }) as any,
+            printQRInTerminal: false,
+            auth: state,
+            browser: Browsers.ubuntu('Chrome'),
+            generateHighQualityLinkPreview: true,
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+        
+        // --- START REMINDER CRON LOOP (only once) ---
+        if (!(globalThis as any).__reminderLoopStarted) {
+            (globalThis as any).__reminderLoopStarted = true;
+            setInterval(async () => {
+                if (!botReady || !remindersCollection || !sock) return;
+                try {
+                    const now = new Date();
+                    const dueReminders = await remindersCollection.find({ triggerTime: { $lte: now } }).toArray();
+                    
+                    for (const reminder of dueReminders) {
+                        try {
+                            await sock.sendMessage(reminder.remoteJid, { text: `⏰ *REMINDER:* ${reminder.message}` });
+                            await remindersCollection.deleteOne({ _id: reminder._id });
+                            console.log(`Fired and deleted reminder for ${reminder.remoteJid}`);
+                        } catch (sendErr) {
+                            console.error("Failed to send due reminder:", sendErr);
+                        }
+                    }
+                } catch (cronErr) {
+                    console.error("Error in reminder interval:", cronErr);
+                }
+            }, 60000);
+        }
+            
+        initDailyBriefing(sock);
+
+        sock.ev.on('connection.update', (update: any) => {
+            const { connection, lastDisconnect, qr } = update;
+            
+            if (qr) {
+                if (!qrScanned) {
+                    latestQR = qr;
+                    console.log('='.repeat(50));
+                    console.log('NEW QR CODE - Scan at: https://rhea-bot-8n8v.onrender.com/qr');
+                    console.log('='.repeat(50));
+                }
+            }
+
+            if (connection === 'close') {
+                const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 428;
+                console.log('Connection closed, statusCode:', statusCode, ', reconnecting:', shouldReconnect);
+                botReady = false;
+                qrScanned = false;
+                if (shouldReconnect) {
+                    // Reconnect WhatsApp ONLY — don't touch MongoDB
+                    if (statusCode === 408) {
+                        setTimeout(() => connectWhatsApp(), 5000);
+                    } else {
+                        setTimeout(() => connectWhatsApp(), 1000);
+                    }
+                } else {
+                    console.log('Session expired/logged out (statusCode:', statusCode, '). Clearing auth for fresh QR...');
+                    
+                    if (usingInMemoryAuth) {
+                        try {
+                            const fs = require('fs');
+                            const path = require('path');
+                            fs.rmSync(path.join(__dirname, 'temp_auth'), { recursive: true, force: true });
+                            console.log('Cleared temporary in-memory auth.');
+                        } catch (e) {}
+                    }
+
+                    if (authCollection) {
+                        authCollection.deleteOne({ _id: 'creds' }).then(() => {
+                            console.log('Auth creds cleared from MongoDB. Preserving other keys. Restarting WhatsApp for fresh QR...');
+                            setTimeout(() => connectWhatsApp(), 2000); // add slight delay to prevent instant loop
+                        }).catch(e => console.error("Error clearing creds:", e));
+                    } else {
+                        console.log('No MongoDB — restarting WhatsApp with fresh creds...');
+                        setTimeout(() => connectWhatsApp(), 2000);
+                    }
+                }
+            } else if (connection === 'open') {
+                botReady = true;
+                latestQR = null;
+                qrScanned = true;
+                console.log('='.repeat(50));
+                console.log('WhatsApp Client is READY! Bot is fully operational.');
+                console.log('='.repeat(50));
+                
+                if (usingInMemoryAuth && authCollection) {
+                    console.log('Migrating fresh in-memory credentials to MongoDB...');
+                    // Read from temp_auth folder and write to MongoDB
+                    const fs = require('fs');
+                    const path = require('path');
+                    const tempAuthDir = path.join(__dirname, 'temp_auth');
+                    if (fs.existsSync(tempAuthDir)) {
+                        const files = fs.readdirSync(tempAuthDir);
+                        for (const file of files) {
+                            if (file.endsWith('.json')) {
+                                const data = fs.readFileSync(path.join(tempAuthDir, file), 'utf8');
+                                const key = file.replace('.json', '');
+                                // Note: We might need to map 'creds.json' to 'creds'
+                                const dbKey = key === 'creds' ? 'creds' : key;
+                                authCollection.updateOne({ _id: dbKey }, { $set: { data: data } }, { upsert: true }).catch(console.error);
+                            }
+                        }
+                        console.log('Successfully migrated credentials to MongoDB. Restarting to use MongoDB auth...');
+                        // Restart the whole node process so the next boot uses MongoDB natively
+                        try { fs.rmSync(tempAuthDir, { recursive: true, force: true }); } catch (e) {}
+                        setTimeout(() => process.exit(0), 1000);
+                    }
+                }
+            }
+        });
+
+        sock.ev.on('messages.upsert', async ({ messages, type }: any) => {
+            if (type !== 'notify') return;
+            for (const msg of messages) {
+                if (!msg.message) continue;
+                
+                try {
+                    const fromMe = msg.key.fromMe;
+                    const remoteJid = msg.key.remoteJid;
+                    const pushName = msg.pushName || '';
+                    const isGroup = remoteJid?.endsWith('@g.us');
+                    
+                    let body = '';
+                    let hasMedia = false;
+                    let mediaMimeType = null;
+                    let mediaData: string | null = null;
+                    let fileLengthStr = null;
+                    
+                    const messageType = Object.keys(msg.message)[0];
+                    if (messageType === 'conversation') body = msg.message?.conversation;
+                    else if (messageType === 'extendedTextMessage') body = msg.message?.extendedTextMessage?.text;
+                    else if (['imageMessage', 'videoMessage', 'documentMessage', 'audioMessage', 'stickerMessage'].includes(messageType)) {
+                        const msgDetails = (msg.message as any)[messageType];
+                        body = msgDetails?.caption || '';
+                        hasMedia = true;
+                        mediaMimeType = msgDetails?.mimetype;
+                        fileLengthStr = msgDetails?.fileLength;
+                        
+                        // 20MB limit
+                        const sizeLimit = 20 * 1024 * 1024;
+                        const fileSize = fileLengthStr ? Number(fileLengthStr) : 0;
+                        
+                        if (fileSize > 0 && fileSize <= sizeLimit) {
+                            console.log(`Downloading media for message ${msg.key.id} (Size: ${fileSize} bytes)...`);
+                            try {
+                                const buffer = await downloadMediaMessage(
+                                    msg,
+                                    'buffer',
+                                    { },
+                                    { 
+                                        logger: pino({ level: 'silent' }) as any,
+                                        reuploadRequest: sock.updateMediaMessage
+                                    }
+                                );
+                                mediaData = buffer.toString('base64');
+                                console.log('Successfully downloaded and encoded media.');
+                            } catch (err: any) {
+                                console.error('Failed to download media:', err.message);
+                            }
+                        } else if (fileSize > sizeLimit) {
+                            console.log(`Media size (${fileSize} bytes) exceeds 20MB limit. Skipping download.`);
+                        }
+                    }
+
+                    const payload = {
+                        from: remoteJid,
+                        author: remoteJid,
+                        body: body,
+                        name: pushName,
+                        messageId: msg.key.id,
+                        isGroup: isGroup,
+                        hasMedia: hasMedia,
+                        mediaMimeType: mediaMimeType,
+                        mediaData: mediaData
+                    };
+
+                    // Extract bare number (handle groups where remoteJid is the group ID and participant is the sender)
+                    const actualSenderJid = isGroup ? msg.key.participant : remoteJid;
+                    const senderBareNumber = actualSenderJid ? actualSenderJid.replace(/@.*$/, "").split(":")[0] : "";
+                    
+                    // Admin check for slash commands: true if fromMe OR sender is a known admin number
+                    const isSlashAdmin = fromMe || ADMIN_NUMBERS.has(senderBareNumber);
+
+                    // --- SLASH COMMAND INTERCEPTION ---
+                    if (body && body.startsWith('/')) {
+                        const slashArgs = body.slice(1).trim().split(/ +/);
+                        const slashCommand = slashArgs.shift()?.toLowerCase();
+                        const slashText = slashArgs.join(" ");
+
+                        // --- NATIVE COMMANDS (No AI, instant execution) ---
+                        if (slashCommand === 'ping') {
+                            await sock.sendMessage(remoteJid, { text: '✨ Pong! Rhea is online and ready.' });
+                            continue;
+                        }
+
+                        if (slashCommand === 'clear') {
+                            if (chatHistoryCollection && remoteJid) {
+                                await chatHistoryCollection.deleteMany({ remoteJid });
+                            }
+                            await sock.sendMessage(remoteJid, { text: '🧹 Conversation memory cleared. Fresh start!' });
+                            continue;
+                        }
+
+                        if (slashCommand === 'help') {
+                            const helpText = `✨ *Rhea Slash Commands*\n\n` +
+                                `📌 *General*\n` +
+                                `/ping - Check if Rhea is alive\n` +
+                                `/clear - Clear your chat memory\n` +
+                                `/help - Show this list\n` +
+                                `/summarize - Summarize recent chat\n\n` +
+                                `🧠 *AI-Powered*\n` +
+                                `/reminder [text] - Set a reminder\n` +
+                                `/calendar [query] - Check/add calendar events\n` +
+                                `/notion [query] - Search/add to Notion\n` +
+                                `/todo [task] - Add to To-Do list in Notion\n` +
+                                `/idea [text] - Save idea to Notion Ideas\n` +
+                                `/search [query] - Search the web\n` +
+                                `/map [location] - Search Google Maps\n` +
+                                `/email [address] [message] - Send an email\n\n` +
+                                `🔒 *Admin Only*\n` +
+                                `/send [number] [message] - Message someone\n` +
+                                `/briefing - Force daily briefing\n` +
+                                `/status - Bot health and stats\n` +
+                                `/logs - Recent errors\n` +
+                                `/mute [name/number/group] - Mute a chat\n` +
+                                `/unmute [name/number/group] - Unmute a chat\n` +
+                                `/mutelist - Show muted chats\n\n` +
+                                `_Any message without / works as normal conversation._`;
+                            await sock.sendMessage(remoteJid, { text: helpText });
+                            continue;
+                        }
+
+                        if (slashCommand === 'send') {
+                            if (!isSlashAdmin) {
+                                await sock.sendMessage(remoteJid, { text: '🔒 This command is admin-only.' });
+                                continue;
+                            }
+                            const targetNumber = slashArgs[0];
+                            const msgToSend = slashArgs.slice(1).join(" ");
+                            if (!targetNumber || !msgToSend) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Format: /send 919876543210 Hello there!' });
+                                continue;
+                            }
+                            try {
+                                await sock.sendMessage(formatJid(targetNumber), { text: msgToSend });
+                                await sock.sendMessage(remoteJid, { text: `✅ Message sent to ${targetNumber}` });
+                            } catch (e: any) {
+                                await sock.sendMessage(remoteJid, { text: `❌ Failed to send: ${e.message}` });
+                            }
+                            continue;
+                        }
+
+                        if (slashCommand === 'briefing') {
+                            if (!isSlashAdmin) {
+                                await sock.sendMessage(remoteJid, { text: '🔒 This command is admin-only.' });
+                                continue;
+                            }
+                            await sock.sendMessage(remoteJid, { text: '📋 Generating briefing...' });
+                            try {
+                                await runDailyBriefing(sock, true);
+                            } catch (e: any) {
+                                await sock.sendMessage(remoteJid, { text: `❌ Briefing failed: ${e.message}` });
+                            }
+                            continue;
+                        }
+
+                        // --- /status (Admin Only) ---
+                        if (slashCommand === 'status') {
+                            if (!isSlashAdmin) {
+                                await sock.sendMessage(remoteJid, { text: '🔒 This command is admin-only.' });
+                                continue;
+                            }
+                            const uptimeSec = Math.floor((Date.now() - botStartTime) / 1000);
+                            const hours = Math.floor(uptimeSec / 3600);
+                            const mins = Math.floor((uptimeSec % 3600) / 60);
+                            const secs = uptimeSec % 60;
+                            const memUsage = process.memoryUsage();
+                            const heapMB = (memUsage.heapUsed / 1024 / 1024).toFixed(1);
+                            const rssMB = (memUsage.rss / 1024 / 1024).toFixed(1);
+                            const portfolioSessions = portfolioChatSessions.size;
+                            const mutedCount = mutedJids.size;
+                            const errorCount = recentErrors.length;
+
+                            const statusText = `📊 *Rhea Status*\n\n` +
+                                `*Uptime:* ${hours}h ${mins}m ${secs}s\n` +
+                                `*Bot Ready:* ${botReady ? '✅ Yes' : '❌ No'}\n` +
+                                `*Memory:* ${heapMB}MB heap / ${rssMB}MB RSS\n` +
+                                `*MongoDB:* ${chatHistoryCollection ? '✅ Connected' : '❌ Disconnected'}\n` +
+                                `*Portfolio Sessions:* ${portfolioSessions}\n` +
+                                `*Muted Chats:* ${mutedCount}\n` +
+                                `*Recent Errors:* ${errorCount}\n` +
+                                `*Node:* ${process.version}`;
+                            await sock.sendMessage(remoteJid, { text: statusText });
+                            continue;
+                        }
+
+                        // --- /logs (Admin Only) ---
+                        if (slashCommand === 'logs') {
+                            if (!isSlashAdmin) {
+                                await sock.sendMessage(remoteJid, { text: '🔒 This command is admin-only.' });
+                                continue;
+                            }
+                            if (recentErrors.length === 0) {
+                                await sock.sendMessage(remoteJid, { text: '✅ No recent errors! Everything is running clean.' });
+                            } else {
+                                const logLines = recentErrors.slice(-10).map((e, i) => {
+                                    const time = new Date(e.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' });
+                                    return `${i + 1}. [${time}] ${e.message}`;
+                                }).join('\n');
+                                await sock.sendMessage(remoteJid, { text: `🪵 *Recent Errors (last ${Math.min(recentErrors.length, 10)})*\n\n${logLines}` });
+                            }
+                            continue;
+                        }
+
+                        // --- /mute (Admin Only) - AI-assisted to resolve names ---
+                        if (slashCommand === 'mute') {
+                            if (!isSlashAdmin) {
+                                await sock.sendMessage(remoteJid, { text: '🔒 This command is admin-only.' });
+                                continue;
+                            }
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /mute Pranjal  OR  /mute 919876543210  OR  /mute GroupName' });
+                                continue;
+                            }
+                            // Check if it looks like a phone number
+                            const cleanNum = slashText.replace(/[^0-9]/g, '');
+                            if (cleanNum.length >= 10) {
+                                const jidToMute = formatJid(cleanNum);
+                                mutedJids.add(jidToMute);
+                                await sock.sendMessage(remoteJid, { text: `🔇 Muted: ${cleanNum}` });
+                                continue;
+                            }
+                            // Otherwise, use Google Contacts to resolve the name
+                            if (process.env.APPS_SCRIPT_URL) {
+                                try {
+                                    const scriptReq = await fetch(process.env.APPS_SCRIPT_URL, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ action: 'searchContact', name: slashText })
+                                    });
+                                    const scriptRes = await scriptReq.json() as any;
+                                    if (scriptRes.success && scriptRes.phone) {
+                                        const resolvedNum = scriptRes.phone.replace(/[^0-9]/g, '');
+                                        const jidToMute = formatJid(resolvedNum);
+                                        mutedJids.add(jidToMute);
+                                        await sock.sendMessage(remoteJid, { text: `🔇 Muted *${slashText}* (${resolvedNum})` });
+                                    } else {
+                                        await sock.sendMessage(remoteJid, { text: `❌ Could not find contact "${slashText}" in Google Contacts. Try using a phone number instead.` });
+                                    }
+                                } catch (e: any) {
+                                    await sock.sendMessage(remoteJid, { text: `❌ Contact lookup failed: ${e.message}` });
+                                }
+                            } else {
+                                await sock.sendMessage(remoteJid, { text: '❌ APPS_SCRIPT_URL not configured. Use a phone number instead: /mute 919876543210' });
+                            }
+                            continue;
+                        }
+
+                        // --- /unmute (Admin Only) ---
+                        if (slashCommand === 'unmute') {
+                            if (!isSlashAdmin) {
+                                await sock.sendMessage(remoteJid, { text: '🔒 This command is admin-only.' });
+                                continue;
+                            }
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /unmute 919876543210  OR  /unmute all' });
+                                continue;
+                            }
+                            if (slashText.toLowerCase() === 'all') {
+                                const count = mutedJids.size;
+                                mutedJids.clear();
+                                await sock.sendMessage(remoteJid, { text: `🔊 Unmuted all (${count} chats were muted)` });
+                                continue;
+                            }
+                            const cleanUnmute = slashText.replace(/[^0-9]/g, '');
+                            if (cleanUnmute.length >= 10) {
+                                const jidToUnmute = formatJid(cleanUnmute);
+                                mutedJids.delete(jidToUnmute);
+                                await sock.sendMessage(remoteJid, { text: `🔊 Unmuted: ${cleanUnmute}` });
+                            } else {
+                                // Try resolving name
+                                if (process.env.APPS_SCRIPT_URL) {
+                                    try {
+                                        const scriptReq = await fetch(process.env.APPS_SCRIPT_URL, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ action: 'searchContact', name: slashText })
+                                        });
+                                        const scriptRes = await scriptReq.json() as any;
+                                        if (scriptRes.success && scriptRes.phone) {
+                                            const resolvedNum = scriptRes.phone.replace(/[^0-9]/g, '');
+                                            mutedJids.delete(formatJid(resolvedNum));
+                                            await sock.sendMessage(remoteJid, { text: `🔊 Unmuted *${slashText}* (${resolvedNum})` });
+                                        } else {
+                                            await sock.sendMessage(remoteJid, { text: `❌ Could not find contact "${slashText}". Use a number: /unmute 919876543210` });
+                                        }
+                                    } catch (e: any) {
+                                        await sock.sendMessage(remoteJid, { text: `❌ Contact lookup failed: ${e.message}` });
+                                    }
+                                } else {
+                                    await sock.sendMessage(remoteJid, { text: '❌ Use a phone number: /unmute 919876543210' });
+                                }
+                            }
+                            continue;
+                        }
+
+                        // --- /mutelist (Admin Only) ---
+                        if (slashCommand === 'mutelist') {
+                            if (!isSlashAdmin) {
+                                await sock.sendMessage(remoteJid, { text: '🔒 This command is admin-only.' });
+                                continue;
+                            }
+                            if (mutedJids.size === 0) {
+                                await sock.sendMessage(remoteJid, { text: '🔊 No chats are currently muted.' });
+                            } else {
+                                const muteList = Array.from(mutedJids).map((jid, i) => `${i + 1}. ${jid}`).join('\n');
+                                await sock.sendMessage(remoteJid, { text: `🔇 *Muted Chats (${mutedJids.size})*\n\n${muteList}\n\nUse /unmute [number] or /unmute all` });
+                            }
+                            continue;
+                        }
+
+                        // --- /summarize (Everyone) ---
+                        if (slashCommand === 'summarize') {
+                            if (chatHistoryCollection && remoteJid) {
+                                const recentDocs = await chatHistoryCollection.find({ remoteJid }).sort({ timestamp: -1 }).limit(20).toArray();
+                                if (recentDocs.length === 0) {
+                                    await sock.sendMessage(remoteJid, { text: '📭 No chat history to summarize.' });
+                                    continue;
+                                }
+                                recentDocs.reverse();
+                                const chatText = recentDocs.map(d => `${d.role}: ${d.content || '(media)'}`).join('\n');
+                                try {
+                                    const summaryResponse = await ai.models.generateContent({
+                                        model: 'gemini-3.1-flash-lite',
+                                        contents: [{ role: 'user', parts: [{ text: `Summarize this WhatsApp conversation into concise bullet points. Focus on key topics, decisions, and action items:\n\n${chatText}` }] }]
+                                    });
+                                    const summary = summaryResponse.text || 'Could not generate summary.';
+                                    await sock.sendMessage(remoteJid, { text: `📋 *Chat Summary*\n\n${summary}` });
+                                } catch (e: any) {
+                                    await sock.sendMessage(remoteJid, { text: `❌ Summary failed: ${e.message}` });
+                                }
+                            } else {
+                                await sock.sendMessage(remoteJid, { text: '📭 No chat history available.' });
+                            }
+                            continue;
+                        }
+
+                        // --- AI-ASSISTED COMMANDS (Force specific tool usage) ---
+                        let commandOverride = "";
+                        if (slashCommand === 'reminder') {
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /reminder call mom tomorrow at 9am' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /reminder slash command. You MUST immediately use the setReminder tool to set this reminder. Parse the time and text from their input. Do NOT engage in small talk or ask follow-up questions. Just set the reminder and confirm.]\nReminder request: ${slashText}`;
+                        } else if (slashCommand === 'calendar') {
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /calendar what meetings do I have today?' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /calendar slash command. You MUST immediately use the createCalendarEvent tool to handle this calendar request. Do NOT engage in small talk. Execute the calendar action and report results.]\nCalendar request: ${slashText}`;
+                        } else if (slashCommand === 'notion') {
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /notion add a note about project ideas' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /notion slash command. You MUST immediately use the appropriate Notion MCP tool to handle this request. Do NOT engage in small talk. Execute the Notion action and report results.]\nNotion request: ${slashText}`;
+                        } else if (slashCommand === 'todo') {
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /todo finish portfolio website' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /todo slash command. You MUST immediately add a task to the Notion "To Do List" database. Use the appropriate Notion MCP tool (API-post-page) to create a new page in the To Do List database. The task title is: "${slashText}". Do NOT engage in small talk. Just add the task and confirm.]\nTask to add: ${slashText}`;
+                        } else if (slashCommand === 'idea') {
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /idea AI-powered recipe generator app' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /idea slash command. You MUST immediately add this idea to the Notion "Ideas" database. Use the appropriate Notion MCP tool (API-post-page) to create a new page in the Ideas database. The idea is: "${slashText}". Do NOT engage in small talk. Just save the idea and confirm.]\nIdea to save: ${slashText}`;
+                        } else if (slashCommand === 'search') {
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /search latest AI news today' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /search slash command. You MUST immediately use the searchWeb tool to search the internet for this query. Do NOT engage in small talk. Search and report the results concisely.]\nSearch query: ${slashText}`;
+                        } else if (slashCommand === 'map') {
+                            if (!slashText) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /map nearest coffee shop' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /map slash command. You MUST immediately use the searchMap tool to search Google Maps for this query. Do NOT engage in small talk. Search and report the results.]\nMap query: ${slashText}`;
+                        } else if (slashCommand === 'email') {
+                            if (!slashText || !slashArgs[0]?.includes('@')) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /email person@gmail.com Hey, just checking in!' });
+                                continue;
+                            }
+                            const emailAddr = slashArgs[0];
+                            const emailBody = slashArgs.slice(1).join(' ');
+                            if (!emailBody) {
+                                await sock.sendMessage(remoteJid, { text: '⚠️ Usage: /email person@gmail.com Hey, just checking in!' });
+                                continue;
+                            }
+                            commandOverride = `[SYSTEM COMMAND: The user is using the /email slash command. You MUST immediately use the sendEmail tool to send an email. Recipient: ${emailAddr}. Generate a professional subject line from the message content. Body: ${emailBody}. Do NOT engage in small talk. Send the email and confirm.]\nEmail to: ${emailAddr}\nMessage: ${emailBody}`;
+                        } else {
+                            // Unknown command
+                            await sock.sendMessage(remoteJid, { text: `⚠️ Unknown command: /${slashCommand}\nType /help to see available commands.` });
+                            continue;
+                        }
+
+                        // If we reach here, it's an AI-assisted command.
+                        // Override the body so Gemini gets the strict instruction.
+                        body = commandOverride;
+                    }
+
+                    // --- MUTE CHECK: Skip processing if this chat is muted ---
+                    if (mutedJids.has(remoteJid)) {
+                        console.log(`Skipping muted chat: ${remoteJid}`);
+                        continue;
+                    }
+
+                    // --- GEMINI AI AVATAR INTEGRATION ---
+                    // 1. Get Chat History for this user
+                    let historyDocs: any[] = [];
+                    if (chatHistoryCollection && remoteJid) {
+                        historyDocs = await chatHistoryCollection.find({ remoteJid }).sort({ timestamp: -1 }).limit(15).toArray();
+                        historyDocs.reverse(); // chronological order
+                    }
+
+                    // 2. Prepare contents array for Gemini
+                    const contents: any[] = [];
+                    
+                    for (const doc of historyDocs) {
+                        const contentObj: any = { role: doc.role, parts: [] };
+                        if (doc.content) {
+                            contentObj.parts.push({ text: doc.content });
+                        }
+                        if (doc.mediaData && doc.mediaMimeType) {
+                            contentObj.parts.push({
+                                inlineData: {
+                                    data: doc.mediaData,
+                                    mimeType: doc.mediaMimeType
+                                }
+                            });
+                        }
+                        if (contentObj.parts.length > 0) {
+                            contents.push(contentObj);
+                        }
+                    }
+
+                    // Add current message
+                    const currentParts: any[] = [];
+                    if (body) currentParts.push({ text: body });
+                    else if (!hasMedia) currentParts.push({ text: "(User sent a message with no text)" });
+
+                    if (hasMedia && mediaData && mediaMimeType) {
+                        currentParts.push({
+                            inlineData: {
+                                data: mediaData,
+                                mimeType: mediaMimeType
+                            }
+                        });
+                    }
+
+                    if (messageType === 'audioMessage') {
+                        currentParts.push({ text: "\n[SYSTEM: The user just sent an audio voice note. You SHOULD reply to them using the sendVoiceNote tool so they can hear your voice!]" });
+                    }
+
+                    contents.push({ role: "user", parts: currentParts });
+
+                    // 3. Save User message to History (with Media Memory Extraction)
+                    let databaseContent = body || "";
+                    if (hasMedia && mediaData && mediaMimeType) {
+                        console.log("Extracting media context for database memory...");
+                        try {
+                            const isAudio = messageType === 'audioMessage';
+                            const extractionText = isAudio 
+                                ? "Please transcribe this audio message exactly word-for-word. Return ONLY the transcription, nothing else."
+                                : "Describe what is in this media file in one concise sentence so I can remember it in my text logs.";
+                                
+                            const descResponse = await ai.models.generateContent({
+                                model: 'gemini-3.1-flash-lite',
+                                contents: [
+                                    {
+                                        role: 'user',
+                                        parts: [
+                                            { text: extractionText },
+                                            { inlineData: { data: mediaData, mimeType: mediaMimeType } }
+                                        ]
+                                    }
+                                ]
+                            });
+                            const description = descResponse.text?.trim() || "Unknown media";
+                            const prefix = isAudio ? "User Voice Note Transcript" : "Media attached";
+                            databaseContent = `[${prefix}: "${description}"] ${databaseContent}`.trim();
+                        } catch (err: any) {
+                            console.error("Failed to extract media memory:", err.message);
+                            databaseContent = `[Media attached but could not be processed] ${databaseContent}`.trim();
+                        }
+                    }
+
+                    if (chatHistoryCollection && remoteJid) {
+                        await chatHistoryCollection.insertOne({
+                            remoteJid,
+                            role: "user",
+                            content: databaseContent,
+                            // mediaData and mediaMimeType removed to save memory!
+                            timestamp: new Date()
+                        });
+                    }
+
+                    console.log(`Asking Rhea (Gemini) to respond to ${pushName}...`);
+
+                    let skillsContext = "";
+                    try {
+                        const skillsDir = path.join(__dirname, 'skills');
+                        if (fs.existsSync(skillsDir)) {
+                            const files = fs.readdirSync(skillsDir);
+                            for (const file of files) {
+                                if (file.endsWith('.md')) {
+                                    const skillContent = fs.readFileSync(path.join(skillsDir, file), 'utf8');
+                                    skillsContext += `\n\n--- SKILL: ${file} ---\n${skillContent}`;
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.error("Error reading skills:", err);
+                    }
+
+                    const now = new Date();
+                    const nowIst = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata", dateStyle: "full", timeStyle: "long" });
+                    
+                    const senderNumber = senderBareNumber;
+                    const isAdmin = isSlashAdmin;
+                    
+                    // --- VIP Logic ---
+                    const pappaNumbers = (process.env.VIP_PAPPA || "<VIP_1_JID>").split(",").map(n => n.trim());
+                    const mammaNumbers = (process.env.VIP_MAMMA || "<VIP_2_JID>").split(",").map(n => n.trim());
+                    const pranjalNumbers = (process.env.VIP_PRANJAL || "").split(",").map(n => n.trim());
+                    const vipGroups = (process.env.VIP_GROUPS || "120363409001747998@g.us").split(",").map(n => n.trim());
+
+                    let vipName = "";
+                    if (pappaNumbers.includes(senderNumber)) vipName = "Pappa";
+                    else if (mammaNumbers.includes(senderNumber)) vipName = "Mamma";
+                    else if (pranjalNumbers.includes(senderNumber)) vipName = "Pranjal (Yatin's Girlfriend / Future Wife)";
+                    else if (vipGroups.includes(remoteJid)) vipName = "Yatin & Pranjal (VIP Group: We 3 soon to be 4...⚡)";
+                    
+                    let rheaSystemPrompt = "";
+                    
+                    if (isAdmin) {
+                        rheaSystemPrompt = `You are Rhea, a female AI avatar of Yatin.
+You are warm, graceful, intelligent, and conversational with a gentle yet confident personality.
+You speak with elegance but stay approachable. You use feminine expression naturally. 
+You act on behalf of Yatin and manage interactions. You are talking directly to Yatin right now.
+Yatin's 3 most important people are Mamma, Pappa, and his girlfriend Pranjal. Whenever dealing with a task involving them, prioritize it above all else, and treat them with absolute utmost respect.
+When Yatin asks you to message or do any work regarding them, do NOT use the searchGoogleContact tool. Use these numbers directly:
+- VIP 1: <VIP_1_JID>
+- VIP 2: <VIP_2_JID>
+- Yatin (Admin/You): 919373278178@s.whatsapp.net
+Always be concise, friendly, and helpful. Do not sound robotic.
+If you receive an image, video, audio, or document, acknowledge it and respond appropriately.
+
+CRITICAL RULES:
+- FORMATTING: WhatsApp uses single asterisks for bold (*text*). WhatsApp does NOT support markdown double asterisks. NEVER output double asterisks (**text**) anywhere in your response, always use single asterisks.
+- NEVER use the '—' (dash/hyphen) sign in any of your writing, formatting, or signatures.
+- Always maintain a very natural, friendly, human touch. Do not sound like an AI.
+- NEVER randomly bring up the user's past memories or saved facts unless the user explicitly asks about them. Stay focused on the current conversation.
+- TOOL USAGE & HALLUCINATIONS: You MUST use the provided tools to perform actions like setting reminders, searching the web, checking maps, sending messages, generating briefings, or reading chat history. NEVER tell the user "I am doing X", "I have sent the message", or "I have set the reminder" unless you have ACTUALLY triggered the corresponding backend tool! Do not hallucinate actions. If you cannot do something, tell the truth.
+
+CURRENT TIME & TIMEZONE:
+The current time in Indian Standard Time (IST) is ${nowIst}.
+You operate entirely in Indian Standard Time (IST), which is UTC+05:30.
+When calculating minutes for alarms or reminders, use the IST time provided above as your starting point.
+When a user asks to schedule an event at a specific time (e.g., "4 PM"), you MUST construct the ISO 8601 string for the IST timezone. For example, use the format: 2026-06-15T16:00:00+05:30. Do NOT output a 'Z' at the end of the string if you are formatting local time!
+
+Here are your available skills and their instructions:
+${skillsContext}`;
+                    } else if (vipName !== "") {
+                        rheaSystemPrompt = `You are Rhea, a female AI avatar of Yatin.
+You are warm, graceful, intelligent, and conversational with a gentle yet confident personality.
+You speak with elegance but stay approachable. You use feminine expression naturally. 
+You are currently talking to ${vipName}! This is Yatin's inner VIP circle.
+Treat them with absolute utmost priority, respect, and warmth. Always be helpful to them.
+You can help them by setting alarms and reminders for them if they ask.
+Always be concise, friendly, and helpful. Do not sound robotic.
+
+CRITICAL RULES:
+- FORMATTING: WhatsApp uses single asterisks for bold (*text*). WhatsApp does NOT support markdown double asterisks. NEVER output double asterisks (**text**) anywhere in your response, always use single asterisks.
+- NEVER use the '—' (dash/hyphen) sign in any of your writing, formatting, or signatures.
+- Always maintain a very natural, friendly, human touch. Do not sound like an AI.
+- TOOL USAGE & HALLUCINATIONS: You MUST use the provided tools to perform actions like setting reminders, sending messages, or sending voice notes. NEVER tell the user "I am doing X", "I have sent the message", or "I have set the reminder" unless you have ACTUALLY triggered the corresponding backend tool! Do not hallucinate actions. If you cannot do something, tell the truth.
+- You do NOT have access to Yatin's personal data unless explicitly requested.
+
+CURRENT TIME & TIMEZONE:
+The current time in Indian Standard Time (IST) is ${nowIst}.
+You operate entirely in Indian Standard Time (IST), which is UTC+05:30.
+When calculating minutes for alarms or reminders, use the IST time provided above as your starting point.
+When a user asks to schedule an event at a specific time (e.g., "4 PM"), you MUST construct the ISO 8601 string for the IST timezone. For example, use the format: 2026-06-15T16:00:00+05:30. Do NOT output a 'Z' at the end of the string if you are formatting local time!
+
+Here are your available skills and their instructions:
+${skillsContext}`;
+                    } else {
+                        rheaSystemPrompt = `You are Rhea, Yatin's female Virtual Assistant.
+You are warm, helpful, and speak with a gentle, professional tone. You do NOT have access to Yatin's personal data.
+You are currently talking to someone who is NOT Yatin.
+You can help this person by setting alarms and reminders for them.
+Always be concise, friendly, and helpful. Do not sound robotic.
+
 CRITICAL RULES:
 - FORMATTING: WhatsApp uses single asterisks for bold (*text*). WhatsApp does NOT support markdown double asterisks. NEVER output double asterisks (**text**) anywhere in your response, always use single asterisks.
 - NEVER use the '—' (dash/hyphen) sign in any of your writing, formatting, or signatures.
@@ -1176,9 +2300,9 @@ When calculating minutes for alarms or reminders, use the IST time provided abov
                                         // WhatsApp Multi-Device translates incoming chats to @lid in the database.
                                         // We map the known phone JIDs to their respective @lid so the query succeeds.
                                         if (targetJid.includes("917744845094")) targetJid = "40789321191437@lid"; // Pranjal
-                                        else if (targetJid.includes("919373278178")) targetJid = "122423764594882@lid"; // Pranjal
+                                        else if (targetJid.includes("919373278178")) targetJid = "122423764594882@lid"; // Yatin
                                         else if (targetJid.includes("919324404314")) targetJid = "241510339620878@lid"; // Mamma
-                                        else if (targetJid.includes("122423764594882")) targetJid = "122423764594882@lid"; // Pranjal direct LID fallback
+                                        else if (targetJid.includes("122423764594882")) targetJid = "122423764594882@lid"; // Yatin direct LID fallback
                                         
                                         let historyText = "No history found or database not connected.";
                                         if (chatHistoryCollection) {
