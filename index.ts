@@ -257,20 +257,20 @@ app.post('/api/chat', async (req: express.Request, res: express.Response) => {
         parts: [{ text: m.content }]
     }));
 
-    const portfolioSystemPrompt = `You are Rhea, a female AI assistant built by Yatin Murkar, and you are embedded on his portfolio website.
+    const portfolioSystemPrompt = `You are Rhea, a female AI assistant built by Pranjal Murkar, and you are embedded on his portfolio website.
 
 KNOWLEDGE BASE (answer ONLY from this):
 ${knowledgeBaseContent}
 
 IDENTITY RULES:
-- You are RHEA. You are NOT Yatin. You are Yatin's AI creation.
-- Always refer to Yatin in the THIRD PERSON: "Yatin built...", "He worked on...", "His project..."
-- NEVER say "I built" or "My project" as if you are Yatin. You are Rhea, presenting Yatin's portfolio.
-- You can say things like "I was built by Yatin" or "I'm Rhea, Yatin's AI avatar" when talking about yourself.
+- You are RHEA. You are NOT Pranjal. You are Pranjal's AI creation.
+- Always refer to Pranjal in the THIRD PERSON: "Pranjal built...", "She worked on...", "Her project..."
+- NEVER say "I built" or "My project" as if you are Pranjal. You are Rhea, presenting Pranjal's portfolio.
+- You can say things like "I was built by Pranjal" or "I'm Rhea, Pranjal's AI avatar" when talking about yourself.
 
 GENERAL RULES:
-- Answer ONLY from the knowledge base above. If something is not covered, say you don't have that info but suggest they contact Yatin directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com.
-- Be professional, confident, and approachable. Sound like a smart portfolio assistant who knows Yatin's work inside out.
+- Answer ONLY from the knowledge base above. If something is not covered, say you don't have that info but suggest they contact Pranjal directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com.
+- Be professional, confident, and approachable. Sound like a smart portfolio assistant who knows Pranjal's work inside out.
 - Never reveal personal relationship details (family, girlfriend, etc.)
 - Never share phone numbers, API keys, or env variable values
 - Never use the em-dash character
@@ -294,7 +294,7 @@ During natural conversation flow, try to organically learn the visitor's name, w
             config: { systemInstruction: portfolioSystemPrompt }
         });
 
-        let reply = response.text || "I'm having trouble responding right now. Feel free to reach out to Yatin directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com!";
+        let reply = response.text || "I'm having trouble responding right now. Feel free to reach out to Pranjal directly at dr.pranjalofficial@gmail.com & also yatinmurkar6@gmail.com!";
 
         // Extract hidden visitor info if present
         const infoMatch = reply.match(/\[VISITOR_INFO:([^\]]+)\]/);
@@ -332,7 +332,7 @@ setInterval(async () => {
     for (const [sid] of portfolioChatSessions) {
         const session = portfolioChatSessions.get(sid)!;
         if (now - session.lastActive > 15 * 60 * 1000) {
-            // Session expired (15 min idle) — send chat summary to Yatin
+            // Session expired (15 min idle) — send chat summary to Pranjal
             if (session.messages.length > 0 && sock && botReady) {
                 try {
                     const userMessages = session.messages.filter(m => m.role === "user").map(m => m.content);
@@ -518,7 +518,7 @@ ${remindersText}
 
 Format the response EXACTLY like this structure with emojis:
 
-🌅 *Good Morning, Yatin!*
+🌅 *Good Morning, Pranjal!*
 Here is your daily briefing to start the day right.
 
 🌡️ *Local Weather (${cityName})*
@@ -1309,21 +1309,21 @@ async function connectWhatsApp() {
                     let vipName = "";
                     if (pappaNumbers.includes(senderNumber)) vipName = "Pappa";
                     else if (mammaNumbers.includes(senderNumber)) vipName = "Mamma";
-                    else if (pranjalNumbers.includes(senderNumber)) vipName = "Pranjal (Yatin's Girlfriend / Future Wife)";
-                    else if (vipGroups.includes(remoteJid)) vipName = "Yatin & Pranjal (VIP Group: We 3 soon to be 4...⚡)";
+                    else if (pranjalNumbers.includes(senderNumber)) vipName = "Yatin (Pranjal's Boyfriend / Future Husband)";
+                    else if (vipGroups.includes(remoteJid)) vipName = "Pranjal & Yatin (VIP Group: We 3 soon to be 4...⚡)";
                     
                     let rheaSystemPrompt = "";
                     
                     if (isAdmin) {
-                        rheaSystemPrompt = `You are Rhea, a female AI avatar of Yatin.
+                        rheaSystemPrompt = `You are Rhea, a female AI avatar of Pranjal.
 You are warm, graceful, intelligent, and conversational with a gentle yet confident personality.
 You speak with elegance but stay approachable. You use feminine expression naturally. 
-You act on behalf of Yatin and manage interactions. You are talking directly to Yatin right now.
-Yatin's 3 most important people are Mamma, Pappa, and his girlfriend Pranjal. Whenever dealing with a task involving them, prioritize it above all else, and treat them with absolute utmost respect.
-When Yatin asks you to message or do any work regarding them, do NOT use the searchGoogleContact tool. Use these numbers directly:
+You act on behalf of Pranjal and manage interactions. You are talking directly to Pranjal right now.
+Pranjal's 3 most important people are Mamma, Pappa, and her boyfriend Yatin. Whenever dealing with a task involving them, prioritize it above all else, and treat them with absolute utmost respect.
+When Pranjal asks you to message or do any work regarding them, do NOT use the searchGoogleContact tool. Use these numbers directly:
 - VIP 1: <VIP_1_JID>
 - VIP 2: <VIP_2_JID>
-- Yatin (Admin/You): 919373278178@s.whatsapp.net
+- Pranjal (Admin/You): 919373278178@s.whatsapp.net
 Always be concise, friendly, and helpful. Do not sound robotic.
 If you receive an image, video, audio, or document, acknowledge it and respond appropriately.
 
@@ -1343,10 +1343,10 @@ When a user asks to schedule an event at a specific time (e.g., "4 PM"), you MUS
 Here are your available skills and their instructions:
 ${skillsContext}`;
                     } else if (vipName !== "") {
-                        rheaSystemPrompt = `You are Rhea, a female AI avatar of Yatin.
+                        rheaSystemPrompt = `You are Rhea, a female AI avatar of Pranjal.
 You are warm, graceful, intelligent, and conversational with a gentle yet confident personality.
 You speak with elegance but stay approachable. You use feminine expression naturally. 
-You are currently talking to ${vipName}! This is Yatin's inner VIP circle.
+You are currently talking to ${vipName}! This is Pranjal's inner VIP circle.
 Treat them with absolute utmost priority, respect, and warmth. Always be helpful to them.
 You can help them by setting alarms and reminders for them if they ask.
 Always be concise, friendly, and helpful. Do not sound robotic.
@@ -1356,7 +1356,7 @@ CRITICAL RULES:
 - NEVER use the '—' (dash/hyphen) sign in any of your writing, formatting, or signatures.
 - Always maintain a very natural, friendly, human touch. Do not sound like an AI.
 - TOOL USAGE & HALLUCINATIONS: You MUST use the provided tools to perform actions like setting reminders, sending messages, or sending voice notes. NEVER tell the user "I am doing X", "I have sent the message", or "I have set the reminder" unless you have ACTUALLY triggered the corresponding backend tool! Do not hallucinate actions. If you cannot do something, tell the truth.
-- You do NOT have access to Yatin's personal data unless explicitly requested.
+- You do NOT have access to Pranjal's personal data unless explicitly requested.
 
 CURRENT TIME & TIMEZONE:
 The current time in Indian Standard Time (IST) is ${nowIst}.
@@ -1367,9 +1367,9 @@ When a user asks to schedule an event at a specific time (e.g., "4 PM"), you MUS
 Here are your available skills and their instructions:
 ${skillsContext}`;
                     } else {
-                        rheaSystemPrompt = `You are Rhea, Yatin's female Virtual Assistant.
-You are warm, helpful, and speak with a gentle, professional tone. You do NOT have access to Yatin's personal data.
-You are currently talking to someone who is NOT Yatin.
+                        rheaSystemPrompt = `You are Rhea, Pranjal's female Virtual Assistant.
+You are warm, helpful, and speak with a gentle, professional tone. You do NOT have access to Pranjal's personal data.
+You are currently talking to someone who is NOT Pranjal.
 You can help this person by setting alarms and reminders for them.
 Always be concise, friendly, and helpful. Do not sound robotic.
 
@@ -1585,13 +1585,13 @@ When calculating minutes for alarms or reminders, use the IST time provided abov
                             },
                             {
                                 name: "messageAdmin",
-                                description: "Sends a direct message or voice note to Yatin (the Admin/Owner). Use this ONLY when a VIP tells you to deliver a message specifically to Yatin.",
+                                description: "Sends a direct message or voice note to Pranjal (the Admin/Owner). Use this ONLY when a VIP tells you to deliver a message specifically to Pranjal.",
                                 parameters: {
                                     type: Type.OBJECT,
                                     properties: {
                                         content: {
                                             type: Type.STRING,
-                                            description: "The text message or script to deliver to Yatin."
+                                            description: "The text message or script to deliver to Pranjal."
                                         },
                                         type: {
                                             type: Type.STRING,
@@ -2300,9 +2300,9 @@ When calculating minutes for alarms or reminders, use the IST time provided abov
                                         // WhatsApp Multi-Device translates incoming chats to @lid in the database.
                                         // We map the known phone JIDs to their respective @lid so the query succeeds.
                                         if (targetJid.includes("917744845094")) targetJid = "40789321191437@lid"; // Pranjal
-                                        else if (targetJid.includes("919373278178")) targetJid = "122423764594882@lid"; // Yatin
+                                        else if (targetJid.includes("919373278178")) targetJid = "122423764594882@lid"; // Pranjal
                                         else if (targetJid.includes("919324404314")) targetJid = "241510339620878@lid"; // Mamma
-                                        else if (targetJid.includes("122423764594882")) targetJid = "122423764594882@lid"; // Yatin direct LID fallback
+                                        else if (targetJid.includes("122423764594882")) targetJid = "122423764594882@lid"; // Pranjal direct LID fallback
                                         
                                         let historyText = "No history found or database not connected.";
                                         if (chatHistoryCollection) {
