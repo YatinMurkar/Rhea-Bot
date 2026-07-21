@@ -568,7 +568,8 @@ async function connectWhatsApp() {
 
             if (connection === 'close') {
                 const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 428;
+                // 428 is connectionClosed. We SHOULD reconnect on 428 instead of wiping the database!
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 console.log('Connection closed, statusCode:', statusCode, ', reconnecting:', shouldReconnect);
                 botReady = false;
                 qrScanned = false;
