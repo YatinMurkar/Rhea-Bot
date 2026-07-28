@@ -473,60 +473,61 @@ async function startBot() {
     }
 }
 
+// --- CACHE FOR AUTH STATE TO PREVENT MAC ERRORS ON RECONNECT ---
+let globalAuthState: any = null;
+let globalSaveCreds: any = null;
+
 // --- CONNECT WHATSAPP (can be called repeatedly without touching MongoDB) ---
 let qrRetryCount = 0;
 const MAX_QR_RETRIES = 50;
 
 async function connectWhatsApp() {
     try {
-        let state: any;
-        let saveCreds: () => Promise<void>;
-        
-        // Flag to track if we are using temporary in-memory auth
-        let usingInMemoryAuth = false;
-
-        let existingCreds = null;
-        if (authCollection) {
-            const data = await authCollection.findOne({ _id: 'creds' });
-            if (data && data.data) {
-                existingCreds = true;
-            }
-        }
-
-        if (authCollection && existingCreds) {
-            const result = await useMongoDBAuthState(authCollection);
-            state = result.state;
-            saveCreds = result.saveCreds;
-            console.log("Auth state loaded from MongoDB.");
-            qrRetryCount = 0;
-        } else {
-            // No MongoDB creds — use pure in-memory creds (QR-only mode)
-            usingInMemoryAuth = true;
-            qrRetryCount++;
-            if (qrRetryCount > MAX_QR_RETRIES) {
-                console.log(`QR retry limit (${MAX_QR_RETRIES}) reached. Pausing for 5 minutes...`);
-                await new Promise(r => setTimeout(r, 5 * 60 * 1000));
+        if (!globalAuthState) {
+            if (authCollection) {
+                console.log("Initializing MongoDB auth state...");
+                const result = await useMongoDBAuthState(authCollection);
+                globalAuthState = result.state;
+                globalSaveCreds = result.saveCreds;
                 qrRetryCount = 0;
+            } else {
+                // Only if MongoDB connection failed completely
+                qrRetryCount++;
+                if (qrRetryCount > MAX_QR_RETRIES) {
+                    console.log(`QR retry limit (${MAX_QR_RETRIES}) reached. Pausing for 5 minutes...`);
+                    await new Promise(r => setTimeout(r, 5 * 60 * 1000));
+                    qrRetryCount = 0;
+                }
+                const { state: memState, saveCreds: memSaveCreds } = await useMultiFileAuthState('./temp_auth');
+                globalAuthState = memState;
+                globalSaveCreds = memSaveCreds;
+                console.log("No MongoDB auth found. Using temporary in-memory auth for QR generation...");
             }
-            const { state: memState, saveCreds: memSaveCreds } = await useMultiFileAuthState('./temp_auth');
-            state = memState;
-            saveCreds = memSaveCreds;
-            console.log("No MongoDB auth found. Using temporary in-memory auth for QR generation...");
         }
 
         const { version, isLatest } = await fetchLatestBaileysVersion();
         console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
+        // Cleanup old socket if it exists to prevent double listeners or socket leaks
+        if (sock) {
+            try {
+                sock.ev.removeAllListeners();
+                if (sock.ws) sock.ws.close();
+            } catch (cleanupErr) {
+                console.error("Error cleaning up old socket:", cleanupErr);
+            }
+        }
+
         sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }) as any,
             printQRInTerminal: false,
-            auth: state,
+            auth: globalAuthState,
             browser: Browsers.ubuntu('Chrome'),
             generateHighQualityLinkPreview: true,
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', globalSaveCreds);
         
         // --- START REMINDER CRON LOOP (only once) ---
         if (!(globalThis as any).__reminderLoopStarted) {
@@ -629,22 +630,18 @@ async function connectWhatsApp() {
                 } else {
                     console.log('Session expired/logged out (statusCode:', statusCode, '). Clearing auth for fresh QR...');
                     
-                    if (usingInMemoryAuth) {
-                        try {
-                            const fs = require('fs');
-                            const path = require('path');
-                            fs.rmSync(path.join(__dirname, 'temp_auth'), { recursive: true, force: true });
-                            console.log('Cleared temporary in-memory auth.');
-                        } catch (e) {}
-                    }
-
                     if (authCollection) {
                         authCollection.deleteOne({ _id: 'creds' }).then(() => {
                             console.log('Auth creds cleared from MongoDB. Preserving other keys. Restarting WhatsApp for fresh QR...');
+                            // Reset global auth state so a fresh one is created
+                            globalAuthState = null;
+                            globalSaveCreds = null;
                             setTimeout(() => connectWhatsApp(), 2000); // add slight delay to prevent instant loop
                         }).catch(e => console.error("Error clearing creds:", e));
                     } else {
                         console.log('No MongoDB — restarting WhatsApp with fresh creds...');
+                        globalAuthState = null;
+                        globalSaveCreds = null;
                         setTimeout(() => connectWhatsApp(), 2000);
                     }
                 }
@@ -655,30 +652,6 @@ async function connectWhatsApp() {
                 console.log('='.repeat(50));
                 console.log('WhatsApp Client is READY! Bot is fully operational.');
                 console.log('='.repeat(50));
-                
-                if (usingInMemoryAuth && authCollection) {
-                    console.log('Migrating fresh in-memory credentials to MongoDB...');
-                    // Read from temp_auth folder and write to MongoDB
-                    const fs = require('fs');
-                    const path = require('path');
-                    const tempAuthDir = path.join(__dirname, 'temp_auth');
-                    if (fs.existsSync(tempAuthDir)) {
-                        const files = fs.readdirSync(tempAuthDir);
-                        for (const file of files) {
-                            if (file.endsWith('.json')) {
-                                const data = fs.readFileSync(path.join(tempAuthDir, file), 'utf8');
-                                const key = file.replace('.json', '');
-                                // Note: We might need to map 'creds.json' to 'creds'
-                                const dbKey = key === 'creds' ? 'creds' : key;
-                                authCollection.updateOne({ _id: dbKey }, { $set: { data: data } }, { upsert: true }).catch(console.error);
-                            }
-                        }
-                        console.log('Successfully migrated credentials to MongoDB. Restarting to use MongoDB auth...');
-                        // Restart the whole node process so the next boot uses MongoDB natively
-                        try { fs.rmSync(tempAuthDir, { recursive: true, force: true }); } catch (e) {}
-                        setTimeout(() => process.exit(0), 1000);
-                    }
-                }
             }
         });
 
@@ -692,6 +665,8 @@ async function connectWhatsApp() {
                     const remoteJid = msg.key.remoteJid;
                     const pushName = msg.pushName || '';
                     const isGroup = remoteJid?.endsWith('@g.us');
+                    
+                    if (remoteJid === 'status@broadcast') continue;
                     
                     let body = '';
                     let hasMedia = false;
